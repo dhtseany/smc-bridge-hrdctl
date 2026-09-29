@@ -208,7 +208,7 @@ class ClientTests(unittest.TestCase):
                 client.press_button('TX', False, check=False)
                 self.assertEqual(client.get_dropdown('Mode'), {'value': 'LSB', 'options': ['LSB', 'USB', 'CW']})
                 self.assertEqual(client.set_dropdown('Mode', 'USB'), 'USB')
-                self.assertEqual(client.step_dropdown('Mode', 5), 'CW')  # Stops at the end of the list.
+                self.assertEqual(client.step_dropdown('Mode', 5), 'CW')  # LSB + 5 wraps: USB, CW, LSB, USB, CW.
                 with self.assertRaises(ValueError):
                     client.set_dropdown('Mode', 'SSB')
 

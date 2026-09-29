@@ -50,8 +50,9 @@ In the mapping editor, send a fader, encoder or key to plugin `hrdctl` with one 
 | `vfo:<hz>` | — | tune detents × `<hz>` | tune `<hz>` (signed, e.g. `vfo:-1000`) |
 | `slider:<name>` | move slider to the fader's position in its range | adjust detents × `slider_step` | — |
 | `slider:<name>:<n>` | — | adjust detents × `<n>` | adjust `<n>` (signed) |
-| `dropdown:<name>` | — | step through its choices, stopping at either end | — |
+| `dropdown:<name>` | — | step through its choices, wrapping around at either end | — |
 | `dropdown:<name>:<value>` | — | — | select `<value>`, e.g. `dropdown:Mode:USB` |
+| `dropdown:<name>:<n>` (signed) | — | step detents × `<n>` choices | step `<n>` choices, wrapping around, e.g. `dropdown:Mode:+1` / `dropdown:Mode:-1` |
 | `button:<name>` | — | — | press HRD's button, e.g. `button:Band +` |
 | `button:<name>:off` | — | — | set the button off |
 | `ptt` | — | — | transmit while held |
@@ -151,7 +152,7 @@ python3 -m unittest discover -s tests -v
 
 Tests use loopback TCP and in-memory streams, never the configured radio. They cover fragmented frames, malformed/truncated responses, fresh frequency reads, dynamic context/radio selection, slider clamping, slider display text, positions outside HRD's range, discovery commands, buttons and dropdowns, PTT keying, unkey retries, unkey on stop and during outage backoff, rejected writes, unknown write outcomes, plugin targets and settings, offline backoff, and (when smc-bridge is importable) a run under smc-bridge's own `PluginHost`.
 
-The original `proof/` scripts are preserved as references. Their one-shot receive functions are not used by this package. Read-only commands (`radio`, `frequency`, `sliders`, `slider-info`, `buttons`, `dropdowns`, `dropdown`, `get`) are confirmed against HRD with an FT-991. HRD pads replies with NULs after the terminator, which the receiver ignores, and reports slider positions as `<raw>,<display text>`. Tuning, slider changes (RF gain), band buttons, Mode selection, PTT keying and unkeying are confirmed on the radio. A Filter width change was acknowledged but not applied while HRD had that setting locked.
+The original `proof/` scripts are preserved as references. Their one-shot receive functions are not used by this package. Read-only commands (`radio`, `frequency`, `sliders`, `slider-info`, `buttons`, `dropdowns`, `dropdown`, `get`) are confirmed against HRD with an FT-991. HRD pads replies with NULs after the terminator, which the receiver ignores, and reports slider positions as `<raw>,<display text>`. Tuning, slider changes (RF gain), band buttons, Mode selection, PTT keying and unkeying are confirmed on the radio; under a running smc-bridge, keys mapped to `button:Band +` and `button:Band -` change bands. A Filter width change was acknowledged but not applied while HRD had that setting locked.
 
 ## License
 

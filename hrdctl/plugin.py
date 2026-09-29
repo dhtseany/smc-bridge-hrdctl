@@ -20,8 +20,10 @@ Targets, entered per control in the smc-bridge mapping editor:
     slider:<name>        fader: move the slider to the fader's position;
                          encoder: adjust steps x slider_step raw units
     slider:<name>:<n>    encoder: adjust steps x <n>; key: adjust <n> per press
-    dropdown:<name>      encoder: step through the dropdown's choices
+    dropdown:<name>      encoder: step through the dropdown's choices, wrapping around
     dropdown:<name>:<v>  key: select <v>, e.g. dropdown:Mode:USB
+    dropdown:<name>:<n>  <n> with a sign: key: step <n> choices per press
+                         (dropdown:Mode:+1); encoder: steps x <n>
     button:<name>        key: press HRD's button, e.g. button:Band +
     button:<name>:off    key: set the button off
     ptt                  key: transmit while held (HRD's ptt_button)
@@ -47,6 +49,7 @@ no dependency on smc-bridge; the bridge only needs the same methods.
 """
 import logging
 import math
+import re
 import time
 
 from .client import HRDClient, HRDError
@@ -91,8 +94,8 @@ def _step(text, target):
 def parse_target(target):
     """A target string -> (kind, name or None, argument or None).
 
-    The argument is a step for vfo and slider, a value for dropdown, and "on"
-    or "off" for button. Kinds: vfo, slider, dropdown, button, ptt.
+    The argument is a step for vfo and slider; a signed step (int) or a value
+    (str) for dropdown; and "on" or "off" for button. Kinds: vfo, slider, dropdown, button, ptt.
     """
     kind, _, rest = target.strip().partition(":")
     if kind == "ptt":
@@ -112,7 +115,10 @@ def parse_target(target):
         return "slider", _named(name, target), step
     if kind == "dropdown":
         name, _, value = rest.partition(":")
-        return "dropdown", _named(name, target), value.strip() or None
+        value = value.strip()
+        if re.fullmatch(r"[+-][0-9]+", value):
+            return "dropdown", _named(name, target), _step(value, target)
+        return "dropdown", _named(name, target), value or None
     if kind == "button":
         name, separator, state = rest.rpartition(":")
         if not separator or state.strip() not in ("on", "off"):
@@ -167,8 +173,8 @@ class HrdPlugin:
             self._run(target, self.client.tune, delta * (arg or self.vfo_step))
         elif kind == "slider":
             self._run(target, self.client.adjust_slider, name, delta * (arg or self.slider_step))
-        elif kind == "dropdown" and arg is None:
-            self._run(target, self.client.step_dropdown, name, delta)
+        elif kind == "dropdown" and not isinstance(arg, str):
+            self._run(target, self.client.step_dropdown, name, delta * (arg or 1))
         else:
             raise ValueError(f"hrdctl: encoders take vfo, slider: or dropdown:<name> targets, not {target!r}")
 
@@ -195,6 +201,8 @@ class HrdPlugin:
             return
         if kind == "button":
             self._run(target, self.client.press_button, name, arg == "on")
+        elif kind == "dropdown" and isinstance(arg, int):
+            self._run(target, self.client.step_dropdown, name, arg)
         elif kind == "dropdown" and arg is not None:
             self._run(target, self.client.set_dropdown, name, arg)
         elif kind in ("vfo", "slider") and arg is not None:

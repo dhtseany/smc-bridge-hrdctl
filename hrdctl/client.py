@@ -273,14 +273,14 @@ class HRDClient:
             return self._select(name, options, value)
 
     def step_dropdown(self, name, delta):
-        """Move `delta` places through the dropdown's list, stopping at either end."""
+        """Move `delta` places through the dropdown's list, wrapping around at either end."""
         _delta(delta)
         with self._lock:
             state = self.get_dropdown(name)
             options, value = state["options"], state["value"]
             if value not in options:
                 raise ProtocolError(f"{name} is at {value!r}, which is not in its list")
-            index = max(0, min(len(options) - 1, options.index(value) + delta))
+            index = (options.index(value) + delta) % len(options)
             return value if options[index] == value else self._select(name, options, options[index])
 
 

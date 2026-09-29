@@ -42,12 +42,14 @@ class TargetTests(unittest.TestCase):
                                  ('ptt', ('ptt', None, None)), ('ptt:foot', ('ptt', 'foot', None)), ('button:V > M', ('button', 'V > M', 'on')),
                                  ('button:Nar:off', ('button', 'Nar', 'off')),
                                  ('dropdown:Mode', ('dropdown', 'Mode', None)),
-                                 ('dropdown:Mode:USB', ('dropdown', 'Mode', 'USB'))):
+                                 ('dropdown:Mode:USB', ('dropdown', 'Mode', 'USB')),
+                                 ('dropdown:Mode:+1', ('dropdown', 'Mode', 1)),
+                                 ('dropdown:Mode:-2', ('dropdown', 'Mode', -2))):
             with self.subTest(target=target):
                 self.assertEqual(parse_target(target), expected)
 
     def test_invalid(self):
-        for target in ('', 'frequency', 'vfo:fast', 'vfo:0', 'slider:', 'slider::5', 'button:', 'dropdown:'):
+        for target in ('', 'frequency', 'vfo:fast', 'vfo:0', 'slider:', 'slider::5', 'button:', 'dropdown:', 'dropdown:Mode:+0'):
             with self.subTest(target=target), self.assertRaises(ValueError):
                 parse_target(target)
 
@@ -164,6 +166,22 @@ class PluginTests(unittest.TestCase):
             plugin.on_key('button:Nar:off', True)
             plugin.on_key('dropdown:Mode:USB', True)
             plugin.on_encoder('dropdown:Mode', 1)
+            plugin.stop()
+
+    def test_dropdown_key_steps(self):
+        def mode(value):
+            return [('[42] get dropdowns', 'Mode'), ('[42] get dropdown-text {Mode}', f'Mode: {value}'),
+                    ('[42] get dropdown-list {Mode}', 'LSB,USB,CW')]
+        with server([('get context', '42'), *mode('LSB'), ('[42] set dropdown Mode USB 1', 'OK'),
+                     *mode('USB'), ('[42] set dropdown Mode LSB 0', 'OK'),
+                     *mode('LSB'), ('[42] set dropdown Mode CW 2', 'OK'),
+                     *mode('CW'), ('[42] set dropdown Mode LSB 0', 'OK')]) as client:
+            plugin = plugin_for(client)
+            plugin.on_key('dropdown:Mode:+1', True)
+            plugin.on_key('dropdown:Mode:+1', False)  # Releases are ignored.
+            plugin.on_key('dropdown:Mode:-1', True)
+            plugin.on_key('dropdown:Mode:-1', True)   # First: wraps to the last.
+            plugin.on_key('dropdown:Mode:+1', True)   # Last: wraps to the first.
             plugin.stop()
 
     def test_rejected_write_is_logged_not_raised(self):
