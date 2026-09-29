@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smc-bridge-hrdctl"
+version = "0.2.0"
+description = "smc-bridge plugin and CLI for native HRD TCP control"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Sean Snell" }]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/dhtseany/smc-bridge-hrdctl"
+
+[project.scripts]
+hrdctl = "hrdctl.cli:main"
+
+[project.entry-points."smc_bridge.plugins"]
+hrdctl = "hrdctl.plugin:HrdPlugin"
+
+[tool.setuptools]
+packages = ["hrdctl"]
