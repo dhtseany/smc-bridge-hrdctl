@@ -48,15 +48,14 @@ def receive_message(sock):
     if size < 18 or size > MAX_FRAME or (size - HEADER.size) % 2:
         raise ProtocolError(f"Invalid HRD frame size: {size}")
     payload = _read_exact(sock, size - HEADER.size)
-    if not payload.endswith(b"\0\0"):
+    # HRD pads replies with extra NULs after the terminator; the text ends at the first one.
+    end = next((i for i in range(0, len(payload), 2) if payload[i:i + 2] == b"\0\0"), None)
+    if end is None:
         raise ProtocolError("HRD response has no terminator")
     try:
-        result = payload[:-2].decode("utf-16le")
+        return payload[:end].decode("utf-16le")
     except UnicodeDecodeError as exc:
         raise ProtocolError("Invalid UTF-16LE response") from exc
-    if "\0" in result:
-        raise ProtocolError("Unexpected embedded NUL in HRD response")
-    return result
 
 
 def _integer(value, label):

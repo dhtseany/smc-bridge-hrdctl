@@ -6,13 +6,13 @@ Path: SMC MIDI controller → smc-bridge → HRD TCP/IP → radio. HRD retains o
 
 ## Install
 
-A local, untracked `PKGBUILD` at the root of this directory builds a pacman package from this checkout: the plugin, the `hrdctl` command and the library, in the system Python's site-packages. From this directory:
+Install it as a pacman package. Its `PKGBUILD` is kept outside this repository and builds a tagged release's source from GitHub: the plugin, the `hrdctl` command and the library, in the system Python's site-packages. From the directory holding the `PKGBUILD`:
 
 ```sh
 makepkg -si
 ```
 
-`makepkg` runs the test suite before packaging. The runtime needs only `python` (3.10 or newer) and its standard library. Building needs `python-build`, `python-installer`, `python-wheel` and `python-setuptools`, which `makepkg -s` installs through pacman. After changing the code, bump `pkgver` or `pkgrel` and run `makepkg -si` again; `pacman -R smc-bridge-hrdctl` removes it.
+`makepkg` runs the test suite before packaging. The runtime needs only `python` (3.10 or newer) and its standard library. Building needs `python-build`, `python-installer`, `python-wheel` and `python-setuptools`, which `makepkg -s` installs through pacman. To upgrade, set `pkgver` and `sha256sums` to the new release and run `makepkg -si` again; `pacman -R smc-bridge-hrdctl` removes it.
 
 For development without installing, run `python3 -m hrdctl` from this directory, or the checkout's `bin/hrdctl` by its full path from anywhere. The smc-bridge plugin only works once the package is installed, because smc-bridge finds plugins through installed package metadata.
 
@@ -49,7 +49,7 @@ In the mapping editor, send a fader, encoder or key to plugin `hrdctl` with one 
 | `slider:<name>` | move slider to the fader's position in its range | adjust detents × `slider_step` | — |
 | `slider:<name>:<n>` | — | adjust detents × `<n>` | adjust `<n>` (signed) |
 
-Slider names use ordinary spaces and must match `hrdctl sliders` exactly. Key releases are ignored; there is no PTT or transmit target. Encoder direction follows smc-bridge's `ENCODER_INCREASES_PAN`.
+Slider names use ordinary spaces and must match `hrdctl sliders` exactly. Key releases are ignored. Nothing keys the transmitter (there is no PTT target), but any slider HRD lists can be targeted, including transmit settings such as `MAX RF power`, `Mic gain`, `VOX gain` and `Speech proc.`; the plugin changes whatever slider a control is mapped to. Encoder direction follows smc-bridge's `ENCODER_INCREASES_PAN`.
 
 Behavior under smc-bridge's plugin rules:
 
@@ -103,7 +103,7 @@ Separate CLI processes do **not** serialize their adjustments with one another; 
 
 The receiver reads complete length-prefixed frames, checks header fields, bounds frame sizes, validates UTF-16LE, and rejects truncated responses. A broken exchange closes the connection. A failed write exchange has an unknown outcome and is never automatically retried; inspect the radio before issuing another adjustment. The timeout applies to individual socket operations, not a total transaction deadline.
 
-No PTT, transmit, or arbitrary raw-command interface is exposed. Frequency limits beyond positivity are left to HRD; supported bands have not been inferred from one radio model.
+No PTT or arbitrary raw-command interface is exposed; slider commands can reach any slider HRD lists, including transmit settings. Frequency limits beyond positivity are left to HRD; supported bands have not been inferred from one radio model.
 
 ## Verification and status
 
@@ -113,7 +113,7 @@ python3 -m unittest discover -s tests -v
 
 Tests use loopback TCP and in-memory streams, never the configured radio. They cover fragmented frames, malformed/truncated responses, fresh frequency reads, dynamic context/radio selection, slider clamping, rejected writes, unknown write outcomes, plugin targets and settings, offline backoff, and (when smc-bridge is importable) a run under smc-bridge's own `PluginHost`.
 
-The original `proof/` scripts are preserved as references. Their one-shot receive functions are not used by this package. This draft follows the supplied protocol and experimentally confirmed commands; slider writes (including fader-driven absolute positions) and strict response-header assumptions still need live verification. Live testing requires separate approval before any connection to the real HRD server.
+The original `proof/` scripts are preserved as references. Their one-shot receive functions are not used by this package. Read-only commands (`radio`, `frequency`, `sliders`) are confirmed against HRD with an FT-991; HRD pads replies with NULs after the terminator, which the receiver ignores. Tuning, slider writes (including fader-driven absolute positions) and the plugin under a running smc-bridge still need live verification.
 
 ## License
 

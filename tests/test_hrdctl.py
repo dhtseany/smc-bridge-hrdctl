@@ -83,8 +83,16 @@ class FramingTests(unittest.TestCase):
             with self.subTest(size=size, magic=magic, reserved=reserved), self.assertRaises(ProtocolError):
                 receive_message(FragmentedSocket(struct.pack('<IIII', size, magic, 0xABCD1234, reserved)))
 
+    def test_nul_padding(self):
+        """HRD pads replies with NULs after the terminator."""
+        for padding in (b'\0\0', b'\0\0' * 8):
+            payload = '1234'.encode('utf-16le') + b'\0\0' + padding
+            packet = struct.pack('<IIII', 16 + len(payload), 0x1234ABCD, 0xABCD1234, 0) + payload
+            with self.subTest(padding=len(padding)):
+                self.assertEqual(receive_message(FragmentedSocket(packet, 5)), '1234')
+
     def test_bad_payloads(self):
-        for payload in (b'A\x00', b'\x00\xd8\x00\x00', b'\0\0\0\0'):
+        for payload in (b'A\x00', b'\x00\xd8\x00\x00', b'A\x00B\x00'):
             packet = struct.pack('<IIII', 16 + len(payload), 0x1234ABCD, 0xABCD1234, 0) + payload
             with self.subTest(payload=payload), self.assertRaises(ProtocolError):
                 receive_message(FragmentedSocket(packet))

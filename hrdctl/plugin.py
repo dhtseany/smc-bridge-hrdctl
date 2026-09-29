@@ -20,9 +20,10 @@ Targets, entered per control in the smc-bridge mapping editor:
                          encoder: adjust steps x slider_step raw units
     slider:<name>:<n>    encoder: adjust steps x <n>; key: adjust <n> per press
 
-Key steps are signed (vfo:+1000, vfo:-1000); releases are ignored. No PTT or
-transmit target exists. Slider names use ordinary spaces and must match HRD's
-slider list exactly.
+Key steps are signed (vfo:+1000, vfo:-1000); releases are ignored. Nothing
+keys the transmitter (there is no PTT target), but any slider HRD lists can be
+targeted, transmit settings such as MAX RF power included. Slider names use
+ordinary spaces and must match HRD's slider list exactly.
 
 The class does not subclass smc_bridge.plugins.Plugin, so this package keeps
 no dependency on smc-bridge; the bridge only needs the same methods.
