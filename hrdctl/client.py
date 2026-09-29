@@ -164,9 +164,25 @@ class HRDClient:
                 raise ProtocolError(f"Invalid radio name: {radio!r}")
             return radio
 
-    def get_sliders(self):
+    def _get_list(self, command):
         with self._lock:
-            return [name.strip() for name in self._command("get sliders").split(",") if name.strip()]
+            return [name.strip() for name in self._command(command).split(",") if name.strip()]
+
+    def get_sliders(self):
+        return self._get_list("get sliders")
+
+    def get_buttons(self):
+        return self._get_list("get buttons")
+
+    def get_dropdowns(self):
+        return self._get_list("get dropdowns")
+
+    def query(self, text):
+        """Send `get <text>` and return HRD's raw reply. Only get commands can be sent."""
+        if not text.strip():
+            raise ValueError("Give the rest of a get command, such as 'radio'")
+        with self._lock:
+            return self._command(f"get {text.strip()}")
 
     def _slider_state(self, name):
         if not name.strip() or any(c in name for c in "\r\n\0~"):
@@ -176,13 +192,14 @@ class HRDClient:
             raise ValueError(f"Slider {name!r} is not exposed by {radio}")
         selector = f"{radio} {name.replace(' ', '~')}"
         bounds = self._command(f"get slider-range {selector}").split(",")
-        position = self._command(f"get slider-pos {selector}").split(",")
+        # The position reply is "<raw>,<display text>", e.g. "179,70 W".
+        position = self._command(f"get slider-pos {selector}").split(",", 1)
         if len(bounds) != 3 or len(position) != 2:
             raise ProtocolError("Unexpected slider range or position response")
         low, high, _ = [_integer(v, "slider range") for v in bounds]
-        raw, displayed = [_integer(v, "slider position") for v in position]
-        if low > high or not low <= raw <= high:
-            raise ProtocolError("Inconsistent slider range or position")
+        raw, displayed = _integer(position[0], "slider position"), position[1].strip()
+        if low > high:
+            raise ProtocolError("Inconsistent slider range")
         return selector, low, high, raw, displayed
 
     def get_slider(self, name):
@@ -193,7 +210,12 @@ class HRDClient:
     def _set_slider(self, name, choose):
         with self._lock:
             selector, low, high, raw, _ = self._slider_state(name)
-            target = max(low, min(high, choose(low, high, raw)))
+            wanted = choose(low, high, raw)
+            # The radio can sit outside HRD's range (an FT-991's Filter width reads 20 while
+            # HRD accepts only 1-17). Moving further out does nothing; moving back enters the range.
+            if (raw > high and wanted >= raw) or (raw < low and wanted <= raw):
+                return raw
+            target = max(low, min(high, wanted))
             if target != raw:
                 self._command(f"set slider-pos {selector} {target}", writing=True)
             return target
@@ -207,3 +229,62 @@ class HRDClient:
         if not 0.0 <= level <= 1.0:
             raise ValueError("Slider level must be between 0.0 and 1.0")
         return self._set_slider(name, lambda low, high, raw: low + round(level * (high - low)))
+
+    # Button and dropdown commands follow WSJT-X's HRD transceiver: names and values
+    # use ~ for spaces in set commands, dropdown reads take the name in braces, and
+    # the dropdown index is the value's position in HRD's list. HRD answers every
+    # button read with 0 (an FT-991 reported Power off while on), so button state is
+    # never read.
+
+    def press_button(self, name, on=True, *, check=True):
+        """Set button `name` on (press, key) or off (release, unkey).
+
+        `check` confirms the name against HRD's button list first; PTT skips it to
+        keep keying quick.
+        """
+        selector = _tilde(name, "button")
+        with self._lock:
+            if check and name not in self.get_buttons():
+                raise ValueError(f"Button {name!r} is not exposed by {self.get_radio()}")
+            self._command(f"set button-select {selector} {1 if on else 0}", writing=True)
+
+    def get_dropdown(self, name):
+        """{"value": current selection, "options": [choices in HRD's order]}."""
+        _tilde(name, "dropdown")
+        with self._lock:
+            if name not in self.get_dropdowns():
+                raise ValueError(f"Dropdown {name!r} is not exposed by {self.get_radio()}")
+            label, separator, value = self._command(f"get dropdown-text {{{name}}}").partition(":")
+            if not separator or label.strip() != name:
+                raise ProtocolError(f"Unexpected dropdown text for {name!r}")
+            options = self._get_list(f"get dropdown-list {{{name}}}")
+            return {"value": value.strip(), "options": options}
+
+    def _select(self, name, options, value):
+        self._command(f"set dropdown {_tilde(name, 'dropdown')} {_tilde(value, 'dropdown value')} "
+                      f"{options.index(value)}", writing=True)
+        return value
+
+    def set_dropdown(self, name, value):
+        with self._lock:
+            options = self.get_dropdown(name)["options"]
+            if value not in options:
+                raise ValueError(f"{name} has no {value!r}; choose from {', '.join(options)}")
+            return self._select(name, options, value)
+
+    def step_dropdown(self, name, delta):
+        """Move `delta` places through the dropdown's list, stopping at either end."""
+        _delta(delta)
+        with self._lock:
+            state = self.get_dropdown(name)
+            options, value = state["options"], state["value"]
+            if value not in options:
+                raise ProtocolError(f"{name} is at {value!r}, which is not in its list")
+            index = max(0, min(len(options) - 1, options.index(value) + delta))
+            return value if options[index] == value else self._select(name, options, options[index])
+
+
+def _tilde(name, kind):
+    if not name.strip() or any(c in name for c in "\r\n\0~{}"):
+        raise ValueError(f"Use a nonempty {kind} name with ordinary spaces")
+    return name.replace(" ", "~")

@@ -38,6 +38,8 @@ vfo_step = 100
 slider_step = 1
 # Seconds to drop events after HRD becomes unreachable
 retry_after = 5
+# HRD button the `ptt` target keys (MOX is the FT-991's alternative)
+ptt_button = TX
 ```
 
 In the mapping editor, send a fader, encoder or key to plugin `hrdctl` with one of these targets:
@@ -48,8 +50,14 @@ In the mapping editor, send a fader, encoder or key to plugin `hrdctl` with one 
 | `vfo:<hz>` | — | tune detents × `<hz>` | tune `<hz>` (signed, e.g. `vfo:-1000`) |
 | `slider:<name>` | move slider to the fader's position in its range | adjust detents × `slider_step` | — |
 | `slider:<name>:<n>` | — | adjust detents × `<n>` | adjust `<n>` (signed) |
+| `dropdown:<name>` | — | step through its choices, stopping at either end | — |
+| `dropdown:<name>:<value>` | — | — | select `<value>`, e.g. `dropdown:Mode:USB` |
+| `button:<name>` | — | — | press HRD's button, e.g. `button:Band +` |
+| `button:<name>:off` | — | — | set the button off |
+| `ptt` | — | — | transmit while held |
+| `ptt:<label>` | — | — | the same, for one of several PTT keys |
 
-Slider names use ordinary spaces and must match `hrdctl sliders` exactly. Key releases are ignored. Nothing keys the transmitter (there is no PTT target), but any slider HRD lists can be targeted, including transmit settings such as `MAX RF power`, `Mic gain`, `VOX gain` and `Speech proc.`; the plugin changes whatever slider a control is mapped to. Encoder direction follows smc-bridge's `ENCODER_INCREASES_PAN`.
+Names use ordinary spaces and must match `hrdctl sliders`, `hrdctl buttons` or `hrdctl dropdowns` exactly; `hrdctl dropdown Mode` lists the modes. Only `ptt` uses key releases. Any slider, button or dropdown HRD lists can be targeted, including transmit settings such as `MAX RF power`, `Mic gain`, `VOX gain` and `Speech proc.`, and the `Tune` button, which transmits; the plugin changes whatever a control is mapped to. Encoder direction follows smc-bridge's `ENCODER_INCREASES_PAN`.
 
 Behavior under smc-bridge's plugin rules:
 
@@ -58,6 +66,25 @@ Behavior under smc-bridge's plugin rules:
 - A write whose outcome is unknown is logged and never retried, as in the CLI. A write HRD rejects is logged and the connection is kept.
 - Each event is a fresh read/modify/write on one connection, serialized on the plugin's thread, so encoder detents no longer race each other as separate CLI processes could.
 - A slider event costs five round trips. smc-bridge drops the plugin's events if 256 are queued, so a very fast fader sweep over a slow link can lose intermediate positions; if the final position is lost, nudge the fader.
+
+### PTT and a panic STOP key
+
+`ptt` keys `ptt_button` while the key is held and unkeys on release. For more than one PTT key, give each its own label, such as `ptt:left` and `ptt:foot`: the plugin then unkeys only when the last one is released. smc-bridge doesn't say which physical key sent an event, so two keys sharing one target can't be told apart, and releasing either would unkey. The plugin also:
+
+- sends the unkey on release even while it is pausing after an HRD outage;
+- if an unkey fails, logs an error and retries the unkey before every later event and when it stops;
+- counts a keying attempt with an unknown outcome as keyed, so it is unkeyed too;
+- only retries unkeys it keyed itself, so another program transmitting through HRD (WSJT-X, say) is left alone.
+
+HRD answers every button read with `0`, so hrdctl cannot confirm the radio's TX state; it relies on sending the unkey.
+
+smc-bridge queues a plugin's events in order and drops them when 256 are waiting, so a release can wait behind other events or, in the worst case, be lost. Put the panic STOP on a key whose action is a **Shell command** instead of the plugin:
+
+```sh
+/usr/bin/hrdctl unkey
+```
+
+It runs on its own thread with its own HRD connection, regardless of the plugin's queue. Use `/usr/bin/hrdctl unkey --button MOX` if `ptt_button` is changed. The FT-991's TX timer (menu 036) is a further backstop.
 
 ## CLI
 
@@ -68,6 +95,9 @@ hrdctl --host 172.16.10.3 --port 7809 frequency
 hrdctl radio
 hrdctl sliders
 hrdctl slider-info "RF gain"
+hrdctl buttons
+hrdctl dropdowns
+hrdctl get slider-pos FT-991 RF~gain
 ```
 
 The following commands change the radio. Run only when ready to observe it:
@@ -79,13 +109,21 @@ hrdctl slider "RF gain" +5
 hrdctl slider "RF gain" -5
 hrdctl slider "AF gain" +5
 hrdctl slider "Squelch" -5
+hrdctl button "Band +" on
+hrdctl dropdown Mode USB
+hrdctl button TX on
+hrdctl unkey
 ```
 
-Slider deltas are **raw units**, not percentages. Use ordinary spaces in slider names; the client converts them to `~` in commands and discovers the radio name. Names must match HRD's slider list exactly.
+`dropdown <name>` without a value only reads: it prints the current value and the choices as JSON. `button` checks the name against HRD's list first; `unkey` does not, so it is sent at once.
+
+Slider deltas are **raw units**, not percentages. Use ordinary spaces in slider names; the client converts them to `~` in commands and discovers the radio name. Names must match HRD's slider list exactly. The radio can sit outside the range HRD accepts (an FT-991 reported Filter width at 20 while HRD accepts 1-17): moving further out then does nothing, and moving back sets the nearest end of HRD's range. HRD may acknowledge a slider change and still not apply it, for example while it considers the related feature switched off.
+
+`buttons` and `dropdowns` list what HRD exposes for the radio. `get` sends any HRD `get` command and prints the raw reply, for finding command names and formats; it cannot send anything else, so it never changes the radio. Button and dropdown commands follow the syntax WSJT-X uses with HRD.
 
 The plugin is the preferred way to connect smc-bridge. The CLI can still be run from a smc-bridge *Shell command* key action using the installed command's full path, for example `/usr/bin/hrdctl tune +1000`.
 
-Successful tuning/slider adjustments print the acknowledged target integer; this is not a subsequent physical readback. `frequency` prints Hz, `radio` prints its name, and `sliders`/`slider-info` print JSON. Exit codes: `0` success, `1` operation/configuration failure, `2` CLI usage error, `3` unknown write outcome. Errors go to stderr.
+Successful tuning/slider adjustments print the acknowledged target integer; this is not a subsequent physical readback. `frequency` prints Hz, `radio` prints its name, `sliders`, `buttons`, `dropdowns` and `slider-info` print JSON, and `slider-info`'s `displayed` is HRD's display text, such as `70 W`. Exit codes: `0` success, `1` operation/configuration failure, `2` CLI usage error, `3` unknown write outcome. Errors go to stderr.
 
 ### Embedding
 
@@ -103,7 +141,7 @@ Separate CLI processes do **not** serialize their adjustments with one another; 
 
 The receiver reads complete length-prefixed frames, checks header fields, bounds frame sizes, validates UTF-16LE, and rejects truncated responses. A broken exchange closes the connection. A failed write exchange has an unknown outcome and is never automatically retried; inspect the radio before issuing another adjustment. The timeout applies to individual socket operations, not a total transaction deadline.
 
-No PTT or arbitrary raw-command interface is exposed; slider commands can reach any slider HRD lists, including transmit settings. Frequency limits beyond positivity are left to HRD; supported bands have not been inferred from one radio model.
+No arbitrary write interface is exposed (`get` is read-only). PTT, sliders, buttons and dropdowns can reach transmit and power controls; see "PTT and a panic STOP key". Frequency limits beyond positivity are left to HRD; supported bands have not been inferred from one radio model.
 
 ## Verification and status
 
@@ -111,9 +149,9 @@ No PTT or arbitrary raw-command interface is exposed; slider commands can reach 
 python3 -m unittest discover -s tests -v
 ```
 
-Tests use loopback TCP and in-memory streams, never the configured radio. They cover fragmented frames, malformed/truncated responses, fresh frequency reads, dynamic context/radio selection, slider clamping, rejected writes, unknown write outcomes, plugin targets and settings, offline backoff, and (when smc-bridge is importable) a run under smc-bridge's own `PluginHost`.
+Tests use loopback TCP and in-memory streams, never the configured radio. They cover fragmented frames, malformed/truncated responses, fresh frequency reads, dynamic context/radio selection, slider clamping, slider display text, positions outside HRD's range, discovery commands, buttons and dropdowns, PTT keying, unkey retries, unkey on stop and during outage backoff, rejected writes, unknown write outcomes, plugin targets and settings, offline backoff, and (when smc-bridge is importable) a run under smc-bridge's own `PluginHost`.
 
-The original `proof/` scripts are preserved as references. Their one-shot receive functions are not used by this package. Read-only commands (`radio`, `frequency`, `sliders`) are confirmed against HRD with an FT-991; HRD pads replies with NULs after the terminator, which the receiver ignores. Tuning, slider writes (including fader-driven absolute positions) and the plugin under a running smc-bridge still need live verification.
+The original `proof/` scripts are preserved as references. Their one-shot receive functions are not used by this package. Read-only commands (`radio`, `frequency`, `sliders`, `slider-info`, `buttons`, `dropdowns`, `dropdown`, `get`) are confirmed against HRD with an FT-991. HRD pads replies with NULs after the terminator, which the receiver ignores, and reports slider positions as `<raw>,<display text>`. Tuning, slider changes (RF gain), band buttons, Mode selection, PTT keying and unkeying are confirmed on the radio. A Filter width change was acknowledged but not applied while HRD had that setting locked.
 
 ## License
 

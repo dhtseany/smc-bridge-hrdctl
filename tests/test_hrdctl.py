@@ -119,6 +119,31 @@ class ClientTests(unittest.TestCase):
                 with client:
                     self.assertEqual(client.adjust_slider('RF gain', delta), target)
 
+    def test_slider_display_text(self):
+        """HRD's position reply is '<raw>,<display text>', and the text may hold units or commas."""
+        range_and_pos = [('[42] get radio', 'FT-991'), ('[42] get sliders', 'MAX RF power,AF gain'),
+                         ('[42] get slider-range FT-991 MAX~RF~power', '0,255,1'),
+                         ('[42] get slider-pos FT-991 MAX~RF~power', '179,1,070 W')]
+        with server([('get context', '42'), *range_and_pos, *range_and_pos,
+                     ('[42] set slider-pos FT-991 MAX~RF~power 174', 'OK')]) as client:
+            with client:
+                self.assertEqual(client.get_slider('MAX RF power'),
+                                 {'minimum': 0, 'maximum': 255, 'raw': 179, 'displayed': '1,070 W'})
+                self.assertEqual(client.adjust_slider('MAX RF power', -5), 174)
+
+    def test_position_beyond_hrd_range(self):
+        """FT-991 Filter width: HRD accepts 1-17, the radio sits at 20. Up does nothing; down enters the range."""
+        state = [('[42] get radio', 'FT-991'), ('[42] get sliders', 'Filter width'),
+                 ('[42] get slider-range FT-991 Filter~width', '1,17,0'),
+                 ('[42] get slider-pos FT-991 Filter~width', '20,Unknown (20)')]
+        with server([('get context', '42'), *state, *state, *state,
+                     ('[42] set slider-pos FT-991 Filter~width 17', 'OK')]) as client:
+            with client:
+                self.assertEqual(client.get_slider('Filter width'),
+                                 {'minimum': 1, 'maximum': 17, 'raw': 20, 'displayed': 'Unknown (20)'})
+                self.assertEqual(client.adjust_slider('Filter width', 1), 20)  # Further out: no write.
+                self.assertEqual(client.adjust_slider('Filter width', -1), 17)
+
     def test_bad_frequency_never_writes(self):
         with server([('get context', '7'), ('[7] get frequency', 'ERROR')]) as client:
             with client, self.assertRaises(ProtocolError):
@@ -150,6 +175,54 @@ class ClientTests(unittest.TestCase):
             with patch('hrdctl.cli.HRDClient', return_value=client), contextlib.redirect_stdout(output):
                 self.assertEqual(main(['tune', '-1000']), 0)
             self.assertEqual(output.getvalue(), '7152000\n')
+
+    def test_discovery_lists_and_get(self):
+        with server([('get context', '5'), ('[5] get buttons', 'TX, Tune,MOX'),
+                     ('[5] get dropdowns', 'Mode,Band'),
+                     ('[5] get button-select TX', '0')]) as client:
+            with client:
+                self.assertEqual(client.get_buttons(), ['TX', 'Tune', 'MOX'])
+                self.assertEqual(client.get_dropdowns(), ['Mode', 'Band'])
+                self.assertEqual(client.query(' button-select TX '), '0')
+                with self.assertRaises(ValueError):
+                    client.query(' ')
+
+    def test_cli_get_is_read_only(self):
+        with server([('get context', '5'), ('[5] get dropdown-text Mode', 'USB')]) as client:
+            output = io.StringIO()
+            with patch('hrdctl.cli.HRDClient', return_value=client), contextlib.redirect_stdout(output):
+                self.assertEqual(main(['get', 'dropdown-text', 'Mode']), 0)
+            self.assertEqual(output.getvalue(), 'USB\n')
+
+    def test_buttons_and_dropdowns(self):
+        mode = [('[5] get dropdowns', 'Mode,AGC'), ('[5] get dropdown-text {Mode}', 'Mode: LSB'),
+                ('[5] get dropdown-list {Mode}', 'LSB,USB,CW')]
+        with server([('get context', '5'), ('[5] get buttons', 'TX,Band +'),
+                     ('[5] set button-select Band~+ 1', 'OK'),
+                     ('[5] set button-select TX 0', 'OK'),
+                     *mode, *mode, ('[5] set dropdown Mode USB 1', 'OK'),
+                     *mode, ('[5] set dropdown Mode CW 2', 'OK'),
+                     *mode]) as client:
+            with client:
+                client.press_button('Band +')
+                client.press_button('TX', False, check=False)
+                self.assertEqual(client.get_dropdown('Mode'), {'value': 'LSB', 'options': ['LSB', 'USB', 'CW']})
+                self.assertEqual(client.set_dropdown('Mode', 'USB'), 'USB')
+                self.assertEqual(client.step_dropdown('Mode', 5), 'CW')  # Stops at the end of the list.
+                with self.assertRaises(ValueError):
+                    client.set_dropdown('Mode', 'SSB')
+
+    def test_unknown_button_never_writes(self):
+        with server([('get context', '5'), ('[5] get buttons', 'TX'), ('[5] get radio', 'FT-991')]) as client:
+            with client, self.assertRaises(ValueError):
+                client.press_button('Band +')
+
+    def test_cli_unkey(self):
+        with server([('get context', '5'), ('[5] set button-select TX 0', 'OK')]) as client:
+            output = io.StringIO()
+            with patch('hrdctl.cli.HRDClient', return_value=client), contextlib.redirect_stdout(output):
+                self.assertEqual(main(['unkey']), 0)
+            self.assertEqual(output.getvalue(), 'off\n')
 
     def test_cli_unknown_exit_code(self):
         with patch('hrdctl.cli.HRDClient') as factory, contextlib.redirect_stderr(io.StringIO()):

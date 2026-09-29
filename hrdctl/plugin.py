@@ -11,6 +11,7 @@ Enable it in smc-bridge's plugins.ini (every setting is optional):
     vfo_step = 100
     slider_step = 1
     retry_after = 5
+    ptt_button = TX
 
 Targets, entered per control in the smc-bridge mapping editor:
 
@@ -19,11 +20,27 @@ Targets, entered per control in the smc-bridge mapping editor:
     slider:<name>        fader: move the slider to the fader's position;
                          encoder: adjust steps x slider_step raw units
     slider:<name>:<n>    encoder: adjust steps x <n>; key: adjust <n> per press
+    dropdown:<name>      encoder: step through the dropdown's choices
+    dropdown:<name>:<v>  key: select <v>, e.g. dropdown:Mode:USB
+    button:<name>        key: press HRD's button, e.g. button:Band +
+    button:<name>:off    key: set the button off
+    ptt                  key: transmit while held (HRD's ptt_button)
+    ptt:<label>          the same, for one of several PTT keys (ptt:left, ptt:foot)
 
-Key steps are signed (vfo:+1000, vfo:-1000); releases are ignored. Nothing
-keys the transmitter (there is no PTT target), but any slider HRD lists can be
-targeted, transmit settings such as MAX RF power included. Slider names use
-ordinary spaces and must match HRD's slider list exactly.
+Key steps are signed (vfo:+1000, vfo:-1000). Only ptt uses key releases. Any
+slider, button or dropdown HRD lists can be targeted, transmit settings such
+as MAX RF power included. Names use ordinary spaces and must match HRD's lists
+exactly.
+
+PTT: releasing the last held PTT key unkeys. Give each PTT key its own label
+(ptt:left, ptt:foot): two keys sharing one target can't be told apart, so
+releasing either would unkey. Releasing unkeys even while HRD is being
+retried after an outage. If an unkey fails, it is retried before every later event and when
+the plugin stops; a keying attempt whose outcome is unknown counts as keyed.
+Only unkeys this plugin keyed are retried, so another program transmitting
+through HRD is left alone. Events can queue or be dropped inside smc-bridge,
+so a panic stop belongs on a key running the Shell command `hrdctl unkey`,
+which uses its own connection.
 
 The class does not subclass smc_bridge.plugins.Plugin, so this package keeps
 no dependency on smc-bridge; the bridge only needs the same methods.
@@ -72,8 +89,14 @@ def _step(text, target):
 
 
 def parse_target(target):
-    """'vfo[:step]' or 'slider:<name>[:step]' -> (kind, slider name or None, step or None)."""
+    """A target string -> (kind, name or None, argument or None).
+
+    The argument is a step for vfo and slider, a value for dropdown, and "on"
+    or "off" for button. Kinds: vfo, slider, dropdown, button, ptt.
+    """
     kind, _, rest = target.strip().partition(":")
+    if kind == "ptt":
+        return "ptt", _named(rest, target) if rest else None, None
     if kind == "vfo":
         return "vfo", None, _step(rest, target) if rest else None
     if kind == "slider":
@@ -86,10 +109,22 @@ def parse_target(target):
                 name = rest  # A colon in the slider name, not a step.
         else:
             name = rest
-        if not name.strip():
-            raise ValueError(f"hrdctl: target {target!r} needs a slider name")
-        return "slider", name, step
-    raise ValueError(f"hrdctl: unknown target {target!r}; use vfo[:hz] or slider:<name>[:step]")
+        return "slider", _named(name, target), step
+    if kind == "dropdown":
+        name, _, value = rest.partition(":")
+        return "dropdown", _named(name, target), value.strip() or None
+    if kind == "button":
+        name, separator, state = rest.rpartition(":")
+        if not separator or state.strip() not in ("on", "off"):
+            name, state = rest, "on"
+        return "button", _named(name, target), state.strip()
+    raise ValueError(f"hrdctl: unknown target {target!r}; use vfo, slider:, dropdown:, button: or ptt")
+
+
+def _named(name, target):
+    if not name.strip():
+        raise ValueError(f"hrdctl: target {target!r} needs a name")
+    return name.strip()
 
 
 class HrdPlugin:
@@ -111,7 +146,10 @@ class HrdPlugin:
             _setting(settings, "port", int, 7809),
             _setting(settings, "timeout", _positive_float, 5.0),
         )
+        self.ptt_button = settings.get("ptt_button", "").strip() or "TX"
         self._offline_until = 0.0
+        self._keyed = False  # This plugin may have keyed the radio.
+        self._held = set()   # ptt targets whose keys are down.
 
     def start(self):
         # An unreachable HRD at startup is not fatal: raising here would keep
@@ -119,33 +157,75 @@ class HrdPlugin:
         self._run("connect", self.client.connect)
 
     def stop(self):
+        if self._keyed:
+            self._unkey()
         self.client.close()
 
     def on_encoder(self, target, delta):
-        kind, name, step = parse_target(target)
+        kind, name, arg = parse_target(target)
         if kind == "vfo":
-            self._run(target, self.client.tune, delta * (step or self.vfo_step))
+            self._run(target, self.client.tune, delta * (arg or self.vfo_step))
+        elif kind == "slider":
+            self._run(target, self.client.adjust_slider, name, delta * (arg or self.slider_step))
+        elif kind == "dropdown" and arg is None:
+            self._run(target, self.client.step_dropdown, name, delta)
         else:
-            self._run(target, self.client.adjust_slider, name, delta * (step or self.slider_step))
+            raise ValueError(f"hrdctl: encoders take vfo, slider: or dropdown:<name> targets, not {target!r}")
 
     def on_fader(self, target, level):
-        kind, name, step = parse_target(target)
-        if kind != "slider" or step is not None:
+        kind, name, arg = parse_target(target)
+        if kind != "slider" or arg is not None:
             raise ValueError(f"hrdctl: faders take slider:<name> targets, not {target!r}")
         self._run(target, self.client.set_slider_level, name, level)
 
     def on_key(self, target, pressed):
+        kind, name, arg = parse_target(target)
+        if kind == "ptt":
+            # smc-bridge doesn't say which physical key sent an event, so keys
+            # sharing one target can't be told apart; each needs its own label.
+            if pressed:
+                self._held.add(target.strip())
+                self._run(target, self._key)
+            else:
+                self._held.discard(target.strip())
+                if not self._held:
+                    self._unkey()
+            return
         if not pressed:
             return
-        kind, name, step = parse_target(target)
-        if step is None:
-            raise ValueError(f"hrdctl: key targets need a signed step, such as vfo:+1000, not {target!r}")
-        if kind == "vfo":
-            self._run(target, self.client.tune, step)
+        if kind == "button":
+            self._run(target, self.client.press_button, name, arg == "on")
+        elif kind == "dropdown" and arg is not None:
+            self._run(target, self.client.set_dropdown, name, arg)
+        elif kind in ("vfo", "slider") and arg is not None:
+            if kind == "vfo":
+                self._run(target, self.client.tune, arg)
+            else:
+                self._run(target, self.client.adjust_slider, name, arg)
         else:
-            self._run(target, self.client.adjust_slider, name, step)
+            raise ValueError(
+                f"hrdctl: keys take ptt, button:, dropdown:<name>:<value> or a signed step "
+                f"such as vfo:+1000, not {target!r}"
+            )
+
+    def _key(self):
+        self._keyed = True  # Before sending: an unknown outcome may have keyed the radio.
+        self.client.press_button(self.ptt_button, True, check=False)
+
+    def _unkey(self):
+        """Release PTT now, ignoring any offline backoff."""
+        try:
+            self.client.press_button(self.ptt_button, False, check=False)
+        except HRDError as exc:
+            self._keyed = True
+            LOG.error("HRD unkey failed: %s; the radio may still be transmitting. "
+                      "Retrying on the next event; use your STOP key now.", exc)
+        else:
+            self._keyed = False
 
     def _run(self, label, action, *args):
+        if self._keyed and not self._held:
+            self._unkey()  # Retry an unkey that failed earlier, before anything else.
         if time.monotonic() < self._offline_until:
             LOG.debug("HRD offline; dropping %s", label)
             return
