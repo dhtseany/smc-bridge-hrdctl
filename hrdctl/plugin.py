@@ -9,6 +9,7 @@ Enable it in smc-bridge's plugins.ini (every setting is optional):
     port = 7809
     timeout = 5
     vfo_step = 100
+    vfo_snap = yes
     slider_step = 1
     retry_after = 5
     ptt_button = TX
@@ -31,6 +32,10 @@ Targets, entered per control in the smc-bridge mapping editor:
     tune                 key: manual tune; while held, Mode is CW and PTT is keyed;
                          releasing unkeys and puts the previous mode back
     tune:<mode>          the same with another carrier mode, e.g. tune:AM
+
+With vfo_snap, a vfo step from a frequency off that step's grid first lands
+on the next multiple of the step in the direction of travel: at 100 Hz steps
+from 7.153.400, +1000 goes to 7.154.000, then 7.155.000.
 
 Key steps are signed (vfo:+1000, vfo:-1000). Only ptt and tune use key releases. Any
 slider, button or dropdown HRD lists can be targeted, transmit settings such
@@ -83,6 +88,15 @@ def _positive_int(value):
     if number <= 0:
         raise ValueError("must be positive")
     return number
+
+
+def _yes_no(value):
+    flag = value.lower()
+    if flag in ("yes", "true", "on", "1"):
+        return True
+    if flag in ("no", "false", "off", "0"):
+        return False
+    raise ValueError("must be yes or no")
 
 
 def _positive_float(value):
@@ -157,6 +171,7 @@ class HrdPlugin:
     def __init__(self, settings):
         self.settings = settings
         self.vfo_step = _setting(settings, "vfo_step", _positive_int, 100)
+        self.vfo_snap = _setting(settings, "vfo_snap", _yes_no, True)
         self.slider_step = _setting(settings, "slider_step", _positive_int, 1)
         self.retry_after = _setting(settings, "retry_after", _positive_float, 5.0)
         self.client = HRDClient(
@@ -185,7 +200,8 @@ class HrdPlugin:
     def on_encoder(self, target, delta):
         kind, name, arg = parse_target(target)
         if kind == "vfo":
-            self._run(target, self.client.tune, delta * (arg or self.vfo_step))
+            step = arg or self.vfo_step
+            self._run(target, self.client.tune, delta * step, self._align(abs(step)))
         elif kind == "slider":
             self._run(target, self.client.adjust_slider, name, delta * (arg or self.slider_step))
         elif kind == "dropdown" and not isinstance(arg, str):
@@ -228,7 +244,7 @@ class HrdPlugin:
             self._run(target, self.client.set_dropdown, name, arg)
         elif kind in ("vfo", "slider") and arg is not None:
             if kind == "vfo":
-                self._run(target, self.client.tune, arg)
+                self._run(target, self.client.tune, arg, self._align(abs(arg)))
             else:
                 self._run(target, self.client.adjust_slider, name, arg)
         else:
@@ -236,6 +252,9 @@ class HrdPlugin:
                 f"hrdctl: keys take ptt, tune, button:, dropdown:<name>:<value> or a signed step "
                 f"such as vfo:+1000, not {target!r}"
             )
+
+    def _align(self, step):
+        return step if self.vfo_snap else None
 
     def _key(self):
         self._keyed = True  # Before sending: an unknown outcome may have keyed the radio.

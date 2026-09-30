@@ -34,6 +34,9 @@ port = 7809
 timeout = 5
 # Hz per encoder detent for a plain `vfo` target
 vfo_step = 100
+# A vfo step from a frequency off that step's grid first lands on the next
+# multiple of the step (7.153.400 +1000 -> 7.154.000, then 7.155.000)
+vfo_snap = yes
 # Raw units per encoder detent for a plain `slider:<name>` target
 slider_step = 1
 # Seconds to drop events after HRD becomes unreachable

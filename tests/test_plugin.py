@@ -55,7 +55,7 @@ class TargetTests(unittest.TestCase):
                 parse_target(target)
 
     def test_invalid_settings(self):
-        for key, value in (('port', 'x'), ('vfo_step', '0'), ('timeout', 'nan'), ('retry_after', '-1')):
+        for key, value in (('port', 'x'), ('vfo_step', '0'), ('vfo_snap', 'maybe'), ('timeout', 'nan'), ('retry_after', '-1')):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 HrdPlugin({key: value})
 
@@ -67,6 +67,24 @@ class PluginTests(unittest.TestCase):
             plugin = plugin_for(client)
             plugin.start()
             plugin.on_encoder('vfo', -3)
+            plugin.stop()
+
+    def test_vfo_snaps_to_step_grid(self):
+        with server([('get context', '42'), ('[42] get frequency', '7153400'),
+                     ('[42] set frequency-hz 7154000', 'OK'),
+                     ('[42] get frequency', '7154000'), ('[42] set frequency-hz 7153000', 'OK'),
+                     ('[42] get frequency', '7153050'), ('[42] set frequency-hz 7153100', 'OK')]) as client:
+            plugin = plugin_for(client)
+            plugin.on_encoder('vfo:1000', 1)
+            plugin.on_key('vfo:-1000', True)
+            plugin.on_encoder('vfo', 1)
+            plugin.stop()
+
+    def test_vfo_snap_off(self):
+        with server([('get context', '42'), ('[42] get frequency', '7153400'),
+                     ('[42] set frequency-hz 7154400', 'OK')]) as client:
+            plugin = plugin_for(client, vfo_snap='no')
+            plugin.on_key('vfo:+1000', True)
             plugin.stop()
 
     def test_encoder_slider_step(self):

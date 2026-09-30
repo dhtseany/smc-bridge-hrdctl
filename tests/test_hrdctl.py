@@ -108,6 +108,15 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(client.tune(1000), 7154000)
                 self.assertEqual(client.tune(-1000), 14199000)
 
+    def test_tune_aligns_to_step_grid(self):
+        for frequency, delta, target in ((7153400, 1000, 7154000), (7153400, 3000, 7156000),
+                                         (7153400, -1000, 7153000), (7153400, -2000, 7152000),
+                                         (7153000, 1000, 7154000), (7153000, -1000, 7152000)):
+            with self.subTest(frequency=frequency, delta=delta):
+                with server([('get context', '1'), ('[1] get frequency', str(frequency)),
+                             (f'[1] set frequency-hz {target}', 'OK')]) as client, client:
+                    self.assertEqual(client.tune(delta, align=1000), target)
+
     def test_slider_clamps_both_ends(self):
         for raw, delta, target in ((253, 5, 255), (2, -5, 0)):
             script = [('get context', '42'), ('[42] get radio', 'Test-Radio'),

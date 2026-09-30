@@ -147,10 +147,20 @@ class HRDClient:
                 raise ProtocolError("HRD returned a nonpositive frequency")
             return frequency
 
-    def tune(self, delta_hz):
+    def tune(self, delta_hz, align=None):
+        """Tune by delta_hz. With align (a step in Hz), a frequency off that
+        step's grid first moves to the next grid line in the direction of
+        travel, which uses up one step of delta_hz."""
         _delta(delta_hz)
         with self._lock:
-            target = self.get_frequency() + delta_hz
+            frequency = self.get_frequency()
+            target = frequency + delta_hz
+            if align and delta_hz and frequency % align:
+                below = frequency - frequency % align
+                if delta_hz > 0:
+                    target = below + delta_hz
+                else:
+                    target = below + align + delta_hz
             if target <= 0:
                 raise ValueError("Target frequency must be positive")
             if delta_hz:
