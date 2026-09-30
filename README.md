@@ -57,8 +57,10 @@ In the mapping editor, send a fader, encoder or key to plugin `hrdctl` with one 
 | `button:<name>:off` | — | — | set the button off |
 | `ptt` | — | — | transmit while held |
 | `ptt:<label>` | — | — | the same, for one of several PTT keys |
+| `tune` | — | — | manual tune: while held, Mode is CW and PTT is keyed; release unkeys and puts the previous mode back |
+| `tune:<mode>` | — | — | the same with another carrier mode, e.g. `tune:AM` |
 
-Names use ordinary spaces and must match `hrdctl sliders`, `hrdctl buttons` or `hrdctl dropdowns` exactly; `hrdctl dropdown Mode` lists the modes. Only `ptt` uses key releases. Any slider, button or dropdown HRD lists can be targeted, including transmit settings such as `MAX RF power`, `Mic gain`, `VOX gain` and `Speech proc.`, and the `Tune` button, which transmits; the plugin changes whatever a control is mapped to. Encoder direction follows smc-bridge's `ENCODER_INCREASES_PAN`.
+Names use ordinary spaces and must match `hrdctl sliders`, `hrdctl buttons` or `hrdctl dropdowns` exactly; `hrdctl dropdown Mode` lists the modes. Only `ptt` and `tune` use key releases. Any slider, button or dropdown HRD lists can be targeted, including transmit settings such as `MAX RF power`, `Mic gain`, `VOX gain` and `Speech proc.`, and the `Tune` button, which transmits; the plugin changes whatever a control is mapped to. Encoder direction follows smc-bridge's `ENCODER_INCREASES_PAN`.
 
 Behavior under smc-bridge's plugin rules:
 
@@ -77,6 +79,8 @@ Behavior under smc-bridge's plugin rules:
 - counts a keying attempt with an unknown outcome as keyed, so it is unkeyed too;
 - only retries unkeys it keyed itself, so another program transmitting through HRD (WSJT-X, say) is left alone.
 
+`tune` is a PTT key with a mode change around it: on press it reads Mode, switches to CW (or the mode named in the target) if it isn't already, then keys `ptt_button`. It shares PTT's held keys, so everything above applies. The previous mode is put back only after an unkey succeeds, never while the radio may still be transmitting, or when the plugin stops. If the mode change fails before PTT is sent, releasing the key sends no unkey (so another program's transmission is left alone) and just puts the mode back. A failed restore is logged and not retried. The carrier's power is whatever `MAX RF power` is set to; map a `slider:MAX RF power` control to lower it for tuning.
+
 HRD answers every button read with `0`, so hrdctl cannot confirm the radio's TX state; it relies on sending the unkey.
 
 smc-bridge queues a plugin's events in order and drops them when 256 are waiting, so a release can wait behind other events or, in the worst case, be lost. Put the panic STOP on a key whose action is a **Shell command** instead of the plugin:
@@ -85,7 +89,7 @@ smc-bridge queues a plugin's events in order and drops them when 256 are waiting
 /usr/bin/hrdctl unkey
 ```
 
-It runs on its own thread with its own HRD connection, regardless of the plugin's queue. Use `/usr/bin/hrdctl unkey --button MOX` if `ptt_button` is changed. The FT-991's TX timer (menu 036) is a further backstop.
+It runs on its own thread with its own HRD connection, regardless of the plugin's queue. Use `/usr/bin/hrdctl unkey --button MOX` if `ptt_button` is changed. It does not restore the mode after a `tune`. The FT-991's TX timer (menu 036) is a further backstop.
 
 ## CLI
 
@@ -150,7 +154,7 @@ No arbitrary write interface is exposed (`get` is read-only). PTT, sliders, butt
 python3 -m unittest discover -s tests -v
 ```
 
-Tests use loopback TCP and in-memory streams, never the configured radio. They cover fragmented frames, malformed/truncated responses, fresh frequency reads, dynamic context/radio selection, slider clamping, slider display text, positions outside HRD's range, discovery commands, buttons and dropdowns, PTT keying, unkey retries, unkey on stop and during outage backoff, rejected writes, unknown write outcomes, plugin targets and settings, offline backoff, and (when smc-bridge is importable) a run under smc-bridge's own `PluginHost`.
+Tests use loopback TCP and in-memory streams, never the configured radio. They cover fragmented frames, malformed/truncated responses, fresh frequency reads, dynamic context/radio selection, slider clamping, slider display text, positions outside HRD's range, discovery commands, buttons and dropdowns, PTT keying, tune's mode switch and restore, unkey retries, unkey on stop and during outage backoff, rejected writes, unknown write outcomes, plugin targets and settings, offline backoff, and (when smc-bridge is importable) a run under smc-bridge's own `PluginHost`.
 
 The original `proof/` scripts are preserved as references. Their one-shot receive functions are not used by this package. Read-only commands (`radio`, `frequency`, `sliders`, `slider-info`, `buttons`, `dropdowns`, `dropdown`, `get`) are confirmed against HRD with an FT-991. HRD pads replies with NULs after the terminator, which the receiver ignores, and reports slider positions as `<raw>,<display text>`. Tuning, slider changes (RF gain), band buttons, Mode selection, PTT keying and unkeying are confirmed on the radio; under a running smc-bridge, keys mapped to `button:Band +` and `button:Band -` change bands. A Filter width change was acknowledged but not applied while HRD had that setting locked.
 

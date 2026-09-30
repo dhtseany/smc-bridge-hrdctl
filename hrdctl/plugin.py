@@ -28,8 +28,11 @@ Targets, entered per control in the smc-bridge mapping editor:
     button:<name>:off    key: set the button off
     ptt                  key: transmit while held (HRD's ptt_button)
     ptt:<label>          the same, for one of several PTT keys (ptt:left, ptt:foot)
+    tune                 key: manual tune; while held, Mode is CW and PTT is keyed;
+                         releasing unkeys and puts the previous mode back
+    tune:<mode>          the same with another carrier mode, e.g. tune:AM
 
-Key steps are signed (vfo:+1000, vfo:-1000). Only ptt uses key releases. Any
+Key steps are signed (vfo:+1000, vfo:-1000). Only ptt and tune use key releases. Any
 slider, button or dropdown HRD lists can be targeted, transmit settings such
 as MAX RF power included. Names use ordinary spaces and must match HRD's lists
 exactly.
@@ -43,6 +46,14 @@ Only unkeys this plugin keyed are retried, so another program transmitting
 through HRD is left alone. Events can queue or be dropped inside smc-bridge,
 so a panic stop belongs on a key running the Shell command `hrdctl unkey`,
 which uses its own connection.
+
+Tune is PTT with a mode change around it and shares PTT's held keys and
+unkey retries. The previous mode is put back after the unkey succeeds (never
+while the radio may still be transmitting) or when the plugin stops. If
+the mode change fails before PTT is sent, release sends no unkey and only
+puts the mode back. A
+failed mode restore is logged, not retried. `hrdctl unkey` does not restore
+the mode.
 
 The class does not subclass smc_bridge.plugins.Plugin, so this package keeps
 no dependency on smc-bridge; the bridge only needs the same methods.
@@ -95,11 +106,12 @@ def parse_target(target):
     """A target string -> (kind, name or None, argument or None).
 
     The argument is a step for vfo and slider; a signed step (int) or a value
-    (str) for dropdown; and "on" or "off" for button. Kinds: vfo, slider, dropdown, button, ptt.
+    (str) for dropdown; and "on" or "off" for button. The name is a label for
+    ptt and a mode for tune. Kinds: vfo, slider, dropdown, button, ptt, tune.
     """
     kind, _, rest = target.strip().partition(":")
-    if kind == "ptt":
-        return "ptt", _named(rest, target) if rest else None, None
+    if kind in ("ptt", "tune"):
+        return kind, _named(rest, target) if rest else None, None
     if kind == "vfo":
         return "vfo", None, _step(rest, target) if rest else None
     if kind == "slider":
@@ -124,7 +136,7 @@ def parse_target(target):
         if not separator or state.strip() not in ("on", "off"):
             name, state = rest, "on"
         return "button", _named(name, target), state.strip()
-    raise ValueError(f"hrdctl: unknown target {target!r}; use vfo, slider:, dropdown:, button: or ptt")
+    raise ValueError(f"hrdctl: unknown target {target!r}; use vfo, slider:, dropdown:, button:, ptt or tune")
 
 
 def _named(name, target):
@@ -155,7 +167,8 @@ class HrdPlugin:
         self.ptt_button = settings.get("ptt_button", "").strip() or "TX"
         self._offline_until = 0.0
         self._keyed = False  # This plugin may have keyed the radio.
-        self._held = set()   # ptt targets whose keys are down.
+        self._held = set()   # ptt and tune targets whose keys are down.
+        self._restore_mode = None  # The mode a tune key replaced, until it is put back.
 
     def start(self):
         # An unreachable HRD at startup is not fatal: raising here would keep
@@ -165,6 +178,8 @@ class HrdPlugin:
     def stop(self):
         if self._keyed:
             self._unkey()
+        else:
+            self._restore()
         self.client.close()
 
     def on_encoder(self, target, delta):
@@ -186,16 +201,22 @@ class HrdPlugin:
 
     def on_key(self, target, pressed):
         kind, name, arg = parse_target(target)
-        if kind == "ptt":
+        if kind in ("ptt", "tune"):
             # smc-bridge doesn't say which physical key sent an event, so keys
             # sharing one target can't be told apart; each needs its own label.
             if pressed:
                 self._held.add(target.strip())
-                self._run(target, self._key)
+                if kind == "tune":
+                    self._run(target, self._tune, name or "CW")
+                else:
+                    self._run(target, self._key)
             else:
                 self._held.discard(target.strip())
                 if not self._held:
-                    self._unkey()
+                    if kind == "tune" and not self._keyed:
+                        self._restore()  # PTT was never sent (the mode change failed).
+                    else:
+                        self._unkey()
             return
         if not pressed:
             return
@@ -212,7 +233,7 @@ class HrdPlugin:
                 self._run(target, self.client.adjust_slider, name, arg)
         else:
             raise ValueError(
-                f"hrdctl: keys take ptt, button:, dropdown:<name>:<value> or a signed step "
+                f"hrdctl: keys take ptt, tune, button:, dropdown:<name>:<value> or a signed step "
                 f"such as vfo:+1000, not {target!r}"
             )
 
@@ -220,16 +241,34 @@ class HrdPlugin:
         self._keyed = True  # Before sending: an unknown outcome may have keyed the radio.
         self.client.press_button(self.ptt_button, True, check=False)
 
+    def _tune(self, mode):
+        if self._restore_mode is None:  # Another tune key may already have switched.
+            current = self.client.get_dropdown("Mode")["value"]
+            if current != mode:
+                self._restore_mode = current  # Before sending, as in _key.
+                self.client.set_dropdown("Mode", mode)
+        self._key()
+
     def _unkey(self):
-        """Release PTT now, ignoring any offline backoff."""
+        """Release PTT now, ignoring any offline backoff, then undo a tune's mode change."""
         try:
             self.client.press_button(self.ptt_button, False, check=False)
         except HRDError as exc:
             self._keyed = True
             LOG.error("HRD unkey failed: %s; the radio may still be transmitting. "
                       "Retrying on the next event; use your STOP key now.", exc)
-        else:
-            self._keyed = False
+            return
+        self._keyed = False
+        self._restore()
+
+    def _restore(self):
+        """Put back the mode a tune key replaced, if any; only once PTT is released."""
+        if self._restore_mode is not None:
+            mode, self._restore_mode = self._restore_mode, None
+            try:
+                self.client.set_dropdown("Mode", mode)
+            except (HRDError, ValueError) as exc:
+                LOG.warning("HRD could not put Mode back to %s after tuning: %s", mode, exc)
 
     def _run(self, label, action, *args):
         if self._keyed and not self._held:

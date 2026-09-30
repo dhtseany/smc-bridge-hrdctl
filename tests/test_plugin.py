@@ -39,7 +39,8 @@ class TargetTests(unittest.TestCase):
                                  ('slider:RF gain', ('slider', 'RF gain', None)),
                                  ('slider:RF gain:+5', ('slider', 'RF gain', 5)),
                                  ('slider:Odd:name', ('slider', 'Odd:name', None)),
-                                 ('ptt', ('ptt', None, None)), ('ptt:foot', ('ptt', 'foot', None)), ('button:V > M', ('button', 'V > M', 'on')),
+                                 ('ptt', ('ptt', None, None)), ('ptt:foot', ('ptt', 'foot', None)),
+                                 ('tune', ('tune', None, None)), ('tune:AM', ('tune', 'AM', None)), ('button:V > M', ('button', 'V > M', 'on')),
                                  ('button:Nar:off', ('button', 'Nar', 'off')),
                                  ('dropdown:Mode', ('dropdown', 'Mode', None)),
                                  ('dropdown:Mode:USB', ('dropdown', 'Mode', 'USB')),
@@ -150,6 +151,63 @@ class PluginTests(unittest.TestCase):
             plugin._offline_until = float('inf')
             plugin.on_key('ptt', True)   # Dropped: HRD is being retried.
             plugin.on_key('ptt', False)  # Sent anyway.
+            plugin.stop()
+
+    def test_tune_switches_to_cw_and_back(self):
+        def mode(value):
+            return [('[42] get dropdowns', 'Mode'), ('[42] get dropdown-text {Mode}', f'Mode: {value}'),
+                    ('[42] get dropdown-list {Mode}', 'LSB,USB,CW,AM')]
+        with server([('get context', '42'), *mode('USB'), *mode('USB'), ('[42] set dropdown Mode CW 2', 'OK'),
+                     ('[42] set button-select TX 1', 'OK'), ('[42] set button-select TX 0', 'OK'),
+                     *mode('CW'), ('[42] set dropdown Mode USB 1', 'OK'),
+                     *mode('CW'), ('[42] set button-select TX 1', 'OK'),   # Already CW: no change.
+                     ('[42] set button-select TX 0', 'OK'),
+                     *mode('LSB'), *mode('LSB'), ('[42] set dropdown Mode AM 3', 'OK'),
+                     ('[42] set button-select TX 1', 'OK'), ('[42] set button-select TX 0', 'OK'),
+                     *mode('AM'), ('[42] set dropdown Mode LSB 0', 'OK')]) as client:
+            plugin = plugin_for(client)
+            plugin.on_key('tune', True)
+            plugin.on_key('tune', False)
+            self.assertFalse(plugin._keyed)
+            self.assertIsNone(plugin._restore_mode)
+            plugin.on_key('tune', True)
+            plugin.on_key('tune', False)
+            plugin.on_key('tune:AM', True)
+            plugin.on_key('tune:AM', False)
+            plugin.stop()
+
+    def test_tune_restores_mode_only_after_unkey(self):
+        mode = [('[42] get dropdowns', 'Mode'), ('[42] get dropdown-text {Mode}', 'Mode: USB'),
+                ('[42] get dropdown-list {Mode}', 'LSB,USB,CW')]
+        with server([('get context', '42'), *mode, *mode, ('[42] set dropdown Mode CW 2', 'OK'),
+                     ('[42] set button-select TX 1', 'OK'), ('[42] set button-select TX 0', 'ERROR'),
+                     ('[42] set button-select TX 0', 'OK'),
+                     ('[42] get dropdowns', 'Mode'), ('[42] get dropdown-text {Mode}', 'Mode: CW'),
+                     ('[42] get dropdown-list {Mode}', 'LSB,USB,CW'),
+                     ('[42] set dropdown Mode USB 1', 'OK')]) as client:
+            plugin = plugin_for(client)
+            plugin.on_key('tune', True)
+            with self.assertLogs('hrdctl.plugin', 'ERROR'):
+                plugin.on_key('tune', False)  # Unkey fails: mode stays CW.
+            self.assertEqual(plugin._restore_mode, 'USB')
+            plugin.stop()  # Unkeys, then puts USB back.
+            self.assertIsNone(plugin._restore_mode)
+
+    def test_tune_does_not_unkey_when_ptt_was_never_sent(self):
+        mode = [('[42] get dropdowns', 'Mode'), ('[42] get dropdown-text {Mode}', 'Mode: USB'),
+                ('[42] get dropdown-list {Mode}', 'LSB,USB,CW')]
+        with server([('get context', '42'), ('[42] get dropdowns', 'Mode'), ('[42] get dropdown-text {Mode}', '?'),  # Mode read fails.
+                     *mode, *mode, ('[42] set dropdown Mode CW 2', 'ERROR'),  # Mode change refused.
+                     *mode, ('[42] set dropdown Mode USB 1', 'OK')]) as client:
+            plugin = plugin_for(client)
+            with self.assertLogs('hrdctl.plugin', 'WARNING'):
+                plugin.on_key('tune', True)
+            plugin.on_key('tune', False)  # Nothing sent: no TX off.
+            with self.assertLogs('hrdctl.plugin', 'WARNING'):
+                plugin.on_key('tune', True)
+            self.assertFalse(plugin._keyed)
+            plugin.on_key('tune', False)  # Puts USB back without a TX off.
+            self.assertIsNone(plugin._restore_mode)
             plugin.stop()
 
     def test_button_and_dropdown_targets(self):
