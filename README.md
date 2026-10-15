@@ -24,7 +24,7 @@ The package registers the `hrdctl` entry point in smc-bridge's `smc_bridge.plugi
 smc-bridge --enable-plugin hrdctl
 ```
 
-Settings go in `plugins.ini` beside `mappings.ini`. All are optional; the defaults are shown:
+Its settings are in smc-bridge's **Settings… → Plugins** tab, in the box under `hrdctl` once it is ticked (smc-bridge 1.1.6 or later). They are kept in `plugins.ini` beside `mappings.ini`, which can also be edited by hand. All are optional; the defaults are shown:
 
 ```ini
 [hrdctl]

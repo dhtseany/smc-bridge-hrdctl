@@ -34,7 +34,7 @@ Targets, entered per control in the smc-bridge mapping editor:
     tune:<mode>          the same with another carrier mode, e.g. tune:AM
 
 With vfo_snap, a vfo step from a frequency off that step's grid first lands
-on the next multiple of the step in the direction of travel: at 100 Hz steps
+on the next multiple of the step in the direction of travel: at 1000 Hz steps
 from 7.153.400, +1000 goes to 7.154.000, then 7.155.000.
 
 Key steps are signed (vfo:+1000, vfo:-1000). Only ptt and tune use key releases. Any
@@ -167,6 +167,25 @@ class HrdPlugin:
     HRD restart does not get the plugin switched off; the next event after
     that reconnects.
     """
+
+    # Offered in smc-bridge's Settings dialog; must agree with __init__.
+    SETTINGS = (
+        {"key": "host", "label": "HRD host", "default": "172.16.10.3",
+         "help": "Address of the machine running Ham Radio Deluxe."},
+        {"key": "port", "label": "HRD port", "type": "int", "default": 7809, "min": 1, "max": 65535},
+        {"key": "timeout", "label": "Timeout (s)", "type": "float", "default": 5, "min": 0.1,
+         "help": "How long to wait for HRD to answer."},
+        {"key": "retry_after", "label": "Retry after (s)", "type": "float", "default": 5, "min": 0.1,
+         "help": "After HRD can't be reached, drop events this long, then reconnect."},
+        {"key": "vfo_step", "label": "VFO step (Hz)", "type": "int", "default": 100, "min": 1,
+         "help": "Hz per encoder detent on a vfo target."},
+        {"key": "vfo_snap", "label": "Snap VFO to step", "type": "bool", "default": True,
+         "help": "A step from off the step's grid first lands on the next multiple of the step."},
+        {"key": "slider_step", "label": "Slider step", "type": "int", "default": 1, "min": 1,
+         "help": "Raw units per encoder detent on a slider: target."},
+        {"key": "ptt_button", "label": "PTT button", "default": "TX",
+         "help": "The HRD button that ptt and tune keys press."},
+    )
 
     def __init__(self, settings):
         self.settings = settings

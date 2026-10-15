@@ -59,6 +59,19 @@ class TargetTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 HrdPlugin({key: value})
 
+    def test_described_settings_match_the_defaults(self):
+        plugin = HrdPlugin({})
+        specs = {spec['key']: spec for spec in HrdPlugin.SETTINGS}
+        self.assertEqual(set(specs), {'host', 'port', 'timeout', 'retry_after', 'vfo_step', 'vfo_snap',
+                                      'slider_step', 'ptt_button'})
+        self.assertEqual((plugin.client.host, plugin.client.port, plugin.client.timeout),
+                         (specs['host']['default'], specs['port']['default'], specs['timeout']['default']))
+        for key in ('retry_after', 'vfo_step', 'vfo_snap', 'slider_step', 'ptt_button'):
+            self.assertEqual(getattr(plugin, key), specs[key]['default'], key)
+        for key, spec in specs.items():
+            if 'min' in spec:
+                HrdPlugin({key: str(spec['min'])})  # The dialog's lowest value is accepted.
+
 
 class PluginTests(unittest.TestCase):
     def test_encoder_tunes_by_steps(self):
